@@ -285,6 +285,13 @@ int GrallocSnapHelper::Lock(native_handle_t *gr_hnd, uint64_t gr_usage,
   SnapHandle *hnd = nullptr;
   if (handles_map_.find(gr_hnd) != handles_map_.end()) {
     hnd = handles_map_.at(gr_hnd);
+  } else {
+    // Some clients lock handles this process never imported; retain them on demand.
+    SnapHandle *handle = SnapHandleFromCNativeHandle(gr_hnd, false);
+    if (handle != nullptr && snapmapper_->Retain(*handle) == SnapError::NONE) {
+      handles_map_.emplace(std::make_pair(gr_hnd, handle));
+      hnd = handle;
+    }
   }
 
   if (hnd != nullptr) {
@@ -331,6 +338,9 @@ int GrallocSnapHelper::Unlock(native_handle_t *gr_hnd, void *in_fence) {
   SnapHandle *hnd = nullptr;
   if (handles_map_.find(gr_hnd) != handles_map_.end()) {
     hnd = handles_map_.at(gr_hnd);
+  } else {
+    // Some clients unlock handles they already freed; older gralloc ignored that.
+    return SnapError::NONE;
   }
 
   if (hnd != nullptr) {
@@ -338,6 +348,9 @@ int GrallocSnapHelper::Unlock(native_handle_t *gr_hnd, void *in_fence) {
     auto status = snapmapper_->Unlock(*hnd, &release_fence);
     if (status == SnapError::NONE) {
       in_fence = nullptr;
+    } else if (status == SnapError::BAD_BUFFER) {
+      // Already unlocked; older gralloc treated this as success.
+      return SnapError::NONE;
     } else {
       ALOGE("%s: Failed to unlock via SnapAlloc. Error code: %d", __FUNCTION__, status);
     }
